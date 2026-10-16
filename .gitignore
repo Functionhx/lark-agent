@@ -1,0 +1,6 @@
+config.json
+.env
+state.json
+PAUSE
+__pycache__/
+*.log

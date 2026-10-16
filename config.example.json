@@ -1,0 +1,21 @@
+{
+  "owner_name": "你的名字",
+  "owner_open_id": "ou_xxx（lark-cli contact +get-user 获取）",
+  "api_base": "https://api.deepseek.com",
+  "model": "deepseek-chat",
+  "temperature": 1.0,
+  "poll_seconds": 10,
+  "debounce_seconds": 8,
+  "history": 20,
+  "takeover_minutes": 30,
+  "max_replies_per_hour": 30,
+  "chats": [
+    {
+      "name": "朋友的名字",
+      "chat_id": "oc_xxx（和对方私聊的 chat_id）",
+      "peer_open_id": "ou_xxx（对方的 open_id）"
+    }
+  ],
+  "control_chat_id": "oc_xxx（控制台群 chat_id）",
+  "control_poll_seconds": 3
+}

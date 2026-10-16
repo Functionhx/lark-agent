@@ -1,0 +1,15 @@
+[Unit]
+Description=Feishu auto-reply agent (DeepSeek)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/lark-agent
+ExecStart=/usr/bin/python3 /home/ubuntu/lark-agent/agent.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
