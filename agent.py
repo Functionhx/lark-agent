@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Feishu auto-reply agent: polls whitelisted chats via lark-cli (as the owner) and replies with DeepSeek."""
-import json, os, subprocess, sys, time, logging, urllib.request, urllib.error
+import json, os, shutil, subprocess, sys, time, logging, urllib.request, urllib.error
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(BASE, "config.json"), encoding="utf-8"))
@@ -76,6 +76,45 @@ def deepseek(messages):
         return json.load(r)["choices"][0]["message"]["content"].strip()
 
 
+def claude_cli(messages):
+    """Generate the reply with Claude Code in print mode (`claude -p`), tools disabled."""
+    cc = CFG.get("claude_cli", {})
+    system = messages[0]["content"]
+    peer = {"user": "她", "assistant": "你"}
+    transcript = "\n".join(f"{peer[m['role']]}：{m['content']}" for m in messages[1:])
+    prompt = ("下面是你们最近的聊天记录（「你」= 你之前发的，「她」= 对方发的）：\n\n" + transcript +
+              "\n\n请直接写出你要发给她的下一条消息。只输出消息正文，不要加引号、前缀或任何解释。")
+    sandbox = os.path.join(BASE, "claude-sandbox")  # empty cwd: no CLAUDE.md, no project files
+    os.makedirs(sandbox, exist_ok=True)
+    cmd = [cc.get("bin", "claude"), "-p", prompt, "--system-prompt", system, "--tools", "",
+           "--output-format", "json", "--no-session-persistence", "--strict-mcp-config"]
+    if cc.get("model"):
+        cmd += ["--model", cc["model"]]
+    cmd += cc.get("extra_args", [])
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=cc.get("timeout", 120), cwd=sandbox)
+    try:
+        d = json.loads(out.stdout)
+    except Exception:
+        raise RuntimeError(f"claude -p failed (exit {out.returncode}): {(out.stderr or out.stdout)[-300:]}")
+    if isinstance(d, list):  # newer versions emit the whole event list; the reply is in the "result" event
+        d = next((e for e in reversed(d) if isinstance(e, dict) and e.get("type") == "result"), {})
+    if not d or d.get("is_error"):
+        raise RuntimeError(f"claude -p error: {str(d.get('result'))[:300]}")
+    return (d.get("result") or "").strip()
+
+
+def backend(state):
+    return state.get("backend") or CFG.get("backend", "api")
+
+
+def generate_reply(messages, state):
+    if backend(state) == "claude_cli":
+        return claude_cli(messages)
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        raise RuntimeError("DEEPSEEK_API_KEY missing in .env")
+    return deepseek(messages)
+
+
 def build_prompt(chat_cfg, history):
     system = open(os.path.join(BASE, "persona.md"), encoding="utf-8").read()
     system = system.replace("{PEER_NAME}", chat_cfg["name"]).replace("{OWNER_NAME}", CFG["owner_name"])
@@ -90,7 +129,7 @@ def build_prompt(chat_cfg, history):
     return msgs
 
 
-def handle_chat(chat_cfg, st, now):
+def handle_chat(chat_cfg, st, now, state):
     cid = chat_cfg["chat_id"]
     peer = chat_cfg["peer_open_id"]
     history = fetch_messages(cid, CFG.get("history", 20))
@@ -133,7 +172,7 @@ def handle_chat(chat_cfg, st, now):
         log.warning("[%s] hourly reply cap reached", chat_cfg["name"])
         return
 
-    reply = deepseek(build_prompt(chat_cfg, history))
+    reply = generate_reply(build_prompt(chat_cfg, history), state)
     if not reply:
         return
     mid = send_text(cid, reply)
@@ -144,7 +183,7 @@ def handle_chat(chat_cfg, st, now):
         st["day"], st["day_count"] = day, 0
     st["day_count"] += 1
     st.pop("pending_since", None)
-    log.info("[%s] replied: %s", chat_cfg["name"], reply.replace("\n", " ")[:120])
+    log.info("[%s] replied via %s: %s", chat_cfg["name"], backend(state), reply.replace("\n", " ")[:120])
 
 
 HELP = ("🎛️ 自动回复控制台\n"
@@ -152,7 +191,10 @@ HELP = ("🎛️ 自动回复控制台\n"
         "关 — 立即关闭\n"
         "暂停 N — 暂停 N 分钟后自动恢复（如：暂停 60）\n"
         "状态 — 查看当前状态\n"
+        "模式 api / 模式 claude — 切换回复引擎（DeepSeek 接口 / claude -p）\n"
         "帮助 — 显示本说明")
+
+BACKEND_NAMES = {"api": "DeepSeek 接口", "claude_cli": "Claude Code（claude -p）"}
 
 
 def is_enabled(state, now):
@@ -168,7 +210,7 @@ def is_enabled(state, now):
 
 def status_text(state, now):
     on = is_enabled(state, now)
-    lines = [f"当前：{'🟢 自动回复中' if on else '🔴 已关闭'}"]
+    lines = [f"当前：{'🟢 自动回复中' if on else '🔴 已关闭'}", f"回复引擎：{BACKEND_NAMES[backend(state)]}"]
     if state.get("resume_at") and not on:
         lines.append("将于 " + time.strftime("%H:%M", time.localtime(state["resume_at"])) + " 自动恢复")
     if os.path.exists(PAUSE_FLAG):
@@ -211,6 +253,16 @@ def handle_control(state, now):
             minutes = int(digits) if digits else 30
             state["enabled"], state["resume_at"] = False, now + minutes * 60
             reply = f"⏸️ 暂停 {minutes} 分钟，" + time.strftime("%H:%M", time.localtime(state["resume_at"])) + " 自动恢复"
+        elif cmd.startswith("模式") or cmd.startswith("mode"):
+            arg = cmd.replace("模式", "").replace("mode", "").strip()
+            target = {"api": "api", "deepseek": "api", "claude": "claude_cli", "cli": "claude_cli"}.get(arg)
+            if not target:
+                reply = f"当前回复引擎：{BACKEND_NAMES[backend(state)]}\n切换：发「模式 api」或「模式 claude」"
+            elif target == "claude_cli" and not shutil.which(CFG.get("claude_cli", {}).get("bin", "claude")):
+                reply = "⚠️ 服务器上找不到 claude 命令，先装好并登录 Claude Code 再切换"
+            else:
+                state["backend"] = target
+                reply = f"🔁 回复引擎已切换为：{BACKEND_NAMES[target]}"
         elif cmd in ("状态", "status", "?", "？"):
             reply = status_text(state, now)
         elif cmd in ("帮助", "help"):
@@ -224,11 +276,11 @@ def handle_control(state, now):
 
 def main():
     load_env()
-    if not os.environ.get("DEEPSEEK_API_KEY"):
-        log.error("DEEPSEEK_API_KEY missing in .env")
-        sys.exit(1)
     state = load_state()
-    log.info("agent started, chats=%s", [c["name"] for c in CFG["chats"]])
+    if backend(state) == "api" and not os.environ.get("DEEPSEEK_API_KEY"):
+        log.error("DEEPSEEK_API_KEY missing in .env (or switch to claude_cli backend)")
+        sys.exit(1)
+    log.info("agent started, backend=%s, chats=%s", backend(state), [c["name"] for c in CFG["chats"]])
     backoff, last_poll = 0, 0
     while True:
         now = time.time()
@@ -237,7 +289,7 @@ def main():
             if is_enabled(state, now) and now - last_poll >= CFG["poll_seconds"]:
                 last_poll = now
                 for c in CFG["chats"]:
-                    handle_chat(c, state["chats"].setdefault(c["chat_id"], {}), now)
+                    handle_chat(c, state["chats"].setdefault(c["chat_id"], {}), now, state)
             save_state(state)
             backoff = 0
         except Exception as e:

@@ -17,5 +17,12 @@
     }
   ],
   "control_chat_id": "oc_xxx（控制台群 chat_id）",
-  "control_poll_seconds": 3
+  "control_poll_seconds": 3,
+  "backend": "api",
+  "claude_cli": {
+    "bin": "claude",
+    "model": null,
+    "timeout": 120,
+    "extra_args": []
+  }
 }

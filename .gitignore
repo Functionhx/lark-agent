@@ -4,3 +4,4 @@ state.json
 PAUSE
 __pycache__/
 *.log
+claude-sandbox/

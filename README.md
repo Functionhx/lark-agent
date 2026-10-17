@@ -16,6 +16,17 @@
 - **人设与护栏**（`persona.md`）：被问是否 AI 时如实说明；不替本人做承诺；不泄露隐私；不代表本人表达感情
 - **控制台群**：开 / 关 / 暂停 N / 状态 / 帮助；重新开启时不回复积压消息（只接最后一条 10 分钟内未回的）
 
+## 两种回复引擎
+
+| `backend` | 说明 |
+|---|---|
+| `api`（默认） | 直接调 OpenAI 兼容接口（默认 DeepSeek），需要 `.env` 里的 `DEEPSEEK_API_KEY` |
+| `claude_cli` | 调用 Claude Code 的 `claude -p` 生成回复；Claude Code 背后接什么模型由你自己配置 |
+
+`claude_cli` 模式下以 `--tools ""` 关闭全部工具（只生成文字，不能读写文件或执行命令），并用 `--system-prompt` 传入 `persona.md`、`--no-session-persistence` 不留会话、`--strict-mcp-config` 不加载 MCP，在空目录 `claude-sandbox/` 中运行。可在 `config.json` 的 `claude_cli` 里设置 `bin`、`model`、`timeout`、`extra_args`。
+
+运行中可在控制台群发「模式 api」或「模式 claude」即时切换，无需重启。
+
 ## 为什么用轮询而不是事件订阅
 
 飞书的消息事件只推送给**机器人**，不会推送「你本人收到的消息」。要以本人身份收发，只能用 `user_access_token` 轮询，本项目用 lark-cli 完成。
@@ -61,6 +72,7 @@ journalctl -u lark-agent -f
 | 操作 | 命令 |
 |---|---|
 | 看日志 | `journalctl -u lark-agent -f` |
+| 切换回复引擎 | 控制台群发「模式 api」/「模式 claude」 |
 | 临时停用 | 控制台群发「关」，或 `touch ~/lark-agent/PAUSE` |
 | 改人设 / 白名单 | 编辑 `persona.md` / `config.json` 后 `sudo systemctl restart lark-agent` |
 | 登录过期 | `lark-cli auth status` 查看，过期后重新 `lark-cli auth login` |
